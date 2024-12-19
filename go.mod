@@ -3,6 +3,7 @@ module github.com/lxc/incus/v6
 go 1.22.7
 
 require (
+	bitbucket.org/aleskinprivate/vzgoploop v0.0.3
 	github.com/Rican7/retry v0.3.1
 	github.com/armon/go-proxyproto v0.1.0
 	github.com/cenkalti/backoff/v4 v4.3.0
