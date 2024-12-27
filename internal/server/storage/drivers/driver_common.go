@@ -300,6 +300,7 @@ func (d *common) moveGPTAltHeader(devPath string) error {
 
 // runFiller runs the supplied filler, and setting the returned volume size back into filler.
 func (d *common) runFiller(vol Volume, devPath string, filler *VolumeFiller, allowUnsafeResize bool) error {
+
 	if filler == nil || filler.Fill == nil {
 		return nil
 	}
@@ -311,7 +312,6 @@ func (d *common) runFiller(vol Volume, devPath string, filler *VolumeFiller, all
 	}
 
 	filler.Size = volSize
-
 	return nil
 }
 

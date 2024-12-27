@@ -10,8 +10,10 @@ import (
 	"bitbucket.org/aleskinprivate/vzgoploop"
 	deviceConfig "github.com/lxc/incus/v6/internal/server/device/config"
 	"github.com/lxc/incus/v6/internal/server/operations"
+	"github.com/lxc/incus/v6/internal/server/state"
 	internalUtil "github.com/lxc/incus/v6/internal/util"
 	"github.com/lxc/incus/v6/shared/api"
+	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/util"
 )
 
@@ -53,6 +55,19 @@ func (d *ploop) Info() Info {
 	}
 }
 
+func (d *ploop) init(s *state.State, name string, config map[string]string, log logger.Logger, volIDFunc func(volType VolumeType, volName string) (int64, error), commonRules *Validators) {
+
+	// Setup logger VZ Ploop
+	err := logger.InitLogger("/var/log/incus/vzploop.log", "", true, true, nil)
+	if err != nil {
+		fmt.Printf("VZ Ploop: Cannot initiate Ploop Logger. Working with default parameters\n")
+	}
+	d.common.init(s, name, config, log, volIDFunc, commonRules)
+
+	//TODO: investigate logging of incus and split information about ploop and other
+	//TODO: Fix global parameters for logfile
+}
+
 // FillConfig populates the storage pool's configuration file with the default values.
 func (d *ploop) FillConfig() error {
 	// Set default source if missing.
@@ -77,7 +92,7 @@ func (d *ploop) Create() error {
 		return fmt.Errorf("Source path '%s' doesn't exist", sourcePath)
 	}
 
-	fmt.Printf("AILDBG: - Create ploop storage! [%s]\n", vzgoploop.About())
+	d.logger.Info("VZ Ploop: Create ploop storage.", logger.Ctx{"about": vzgoploop.About()})
 
 	// Check that if within INCUS_DIR, we're at our expected spot.
 	cleanSource := filepath.Clean(sourcePath)
@@ -95,7 +110,7 @@ func (d *ploop) Create() error {
 	if !isEmpty {
 		return fmt.Errorf("Source path '%s' isn't empty", sourcePath)
 	}
-	fmt.Printf("AILDBG: - Created ploop storage!\n")
+	d.logger.Info("VZ Ploop: Created ploop storage")
 	return nil
 }
 

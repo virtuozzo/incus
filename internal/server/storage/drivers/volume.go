@@ -75,6 +75,9 @@ type ContentType string
 // ContentTypeFS indicates the volume will be populated with a mountabble filesystem.
 const ContentTypeFS = ContentType("filesystem")
 
+// ContentTypePloop indicates the volume will be populated with a VZ ploop device
+const ContentTypePloop = ContentType("ploop")
+
 // ContentTypeBlock indicates the volume will be a block device and its contents and we do not
 // know which filesystem(s) (if any) are in use.
 const ContentTypeBlock = ContentType("block")
