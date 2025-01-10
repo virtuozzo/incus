@@ -11,9 +11,11 @@ import (
 
 	"bitbucket.org/aleskinprivate/vzgoploop"
 	"github.com/lxc/incus/v6/internal/instancewriter"
+	"github.com/lxc/incus/v6/internal/rsync"
 	"github.com/lxc/incus/v6/internal/server/backup"
 	"github.com/lxc/incus/v6/internal/server/migration"
 	"github.com/lxc/incus/v6/internal/server/operations"
+	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/logger"
 	"github.com/lxc/incus/v6/shared/revert"
 	"github.com/lxc/incus/v6/shared/units"
@@ -23,6 +25,7 @@ import (
 const defaultPloopSize = 10 * 1024 * 1024 //10Gb
 const defaultFileName = "root.hds"
 const defaultDescriptor = "DiskDescriptor.xml"
+const snapshotInfo = "snapshot.info"
 const maxTraceDepth = 5
 
 func (d *ploop) PrintTrace(info string, depth int) {
@@ -233,12 +236,11 @@ func (d *ploop) ValidateVolume(vol Volume, removeUnknownKeys bool) error {
 	if vol.volType != VolumeTypeContainer {
 		err := d.validateVolume(vol, nil, removeUnknownKeys)
 		if err != nil {
-			d.logger.Debug("VZ Ploop: 1 Size cannot be specified")
+			d.logger.Debug("VZ Ploop: Size cannot be specified for non-containers type")
 			return err
 		}
 
 		if vol.config["size"] != "" && vol.volType == VolumeTypeBucket {
-			d.logger.Debug("VZ Ploop: 2 Size cannot be specified")
 			return fmt.Errorf("VZ Ploop: Size cannot be specified for buckets")
 		}
 	}
@@ -334,8 +336,20 @@ func (d *ploop) UpdateVolume(vol Volume, changedConfig map[string]string) error 
 
 // GetVolumeUsage returns the disk space used by the volume.
 func (d *ploop) GetVolumeUsage(vol Volume) (int64, error) {
-	d.PrintTrace("", 1)
+	d.PrintTrace("Usage for:"+vol.MountPath()+"/"+defaultDescriptor, 3)
 
+	// Snapshot usage not supported for Ploop.
+	if vol.IsSnapshot() {
+		return -1, ErrNotSupported
+	}
+
+	if vol.volType == VolumeTypeContainer {
+		stats, res := vzgoploop.GetDiskStats(vol.MountPath() + "/" + defaultDescriptor)
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			return -1, fmt.Errorf("VZ Ploop: Can't get disk stats: %s \n", res.Msg)
+		}
+		return int64(stats.TotalSize), nil
+	}
 	return 0, nil
 }
 
@@ -490,8 +504,80 @@ func (d *ploop) BackupVolume(vol Volume, tarWriter *instancewriter.InstanceTarWr
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
 func (d *ploop) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
-	d.PrintTrace("", 1)
+	d.PrintTrace("Create for:"+snapVol.MountPath(), 3)
 
+	parentName, snapName, _ := api.GetParentAndSnapshotName(snapVol.name)
+	//srcDevPath, err := d.GetVolumeDiskPath(parentVol)
+	srcPath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
+
+	d.logger.Debug("VZ Ploop: Create snap", logger.Ctx{"type1": snapVol.volType, "parent": parentName, "snapName": snapName})
+	d.logger.Debug("VZ Ploop: Create snap", logger.Ctx{"srcPath": srcPath})
+
+	// Create snapshot directory.
+	err := snapVol.EnsureMountPath()
+	if err != nil {
+		return err
+	}
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	snapPath := snapVol.MountPath()
+	revert.Add(func() { _ = os.RemoveAll(snapPath) })
+
+	if snapVol.volType == VolumeTypeContainer {
+
+		var rsyncArgs []string
+
+		rsyncArgs = append(rsyncArgs, "--exclude", defaultFileName)
+		rsyncArgs = append(rsyncArgs, "--exclude", defaultDescriptor)
+		rsyncArgs = append(rsyncArgs, "--exclude", ".statfs")
+		rsyncArgs = append(rsyncArgs, "--exclude", defaultFileName+"*")
+		rsyncArgs = append(rsyncArgs, "--exclude", "rootfs")
+
+		bwlimit := d.config["rsync.bwlimit"]
+		srcPath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
+		d.Logger().Debug("Copying fileystem volume", logger.Ctx{"sourcePath": srcPath, "targetPath": snapPath, "bwlimit": bwlimit, "rsyncArgs": rsyncArgs})
+
+		// Copy filesystem volume into snapshot directory.
+		_, err = rsync.LocalCopy(srcPath, snapPath, bwlimit, true, rsyncArgs...)
+		if err != nil {
+			return err
+		}
+
+		disk, res := vzgoploop.Open(srcPath + "/" + defaultDescriptor)
+
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			return fmt.Errorf("VZ Ploop: Can't open disk: %s \n", res.Msg)
+		}
+		defer disk.Close()
+
+		//create snapshot
+		uuid, res := disk.CreateSnapshot("")
+		//TODO: - it seems parameter inside CreateSnapshot() does not work or ignores, or has another meaning
+		//need additional investigation. I assumed to use here snapVol.MountPath()
+
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			return fmt.Errorf("VZ Ploop: Can't create snapshot: %s \n", res.Msg)
+		}
+		d.logger.Debug("VZ Ploop: Created snapshot", logger.Ctx{"uuid": uuid})
+
+		//todo - think about revert
+		fSnapshotInfo, err := os.Create(snapPath + "/" + snapshotInfo)
+		if err != nil {
+			return err
+		}
+
+		defer fSnapshotInfo.Close()
+
+		_, err = fSnapshotInfo.WriteString("uuid = " + uuid + "\npath = " + srcPath)
+		if err != nil {
+			return err
+		}
+		fSnapshotInfo.Sync()
+	}
+
+	revert.Success()
 	return nil
 }
 
@@ -499,7 +585,60 @@ func (d *ploop) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) e
 // must be bare names and should not be in the format "volume/snapshot".
 func (d *ploop) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
 	d.PrintTrace("", 1)
+	snapPath := snapVol.MountPath()
 
+	if snapVol.volType == VolumeTypeContainer {
+		b, err := os.ReadFile(snapPath + "/" + snapshotInfo)
+		if err != nil {
+			fmt.Print(err)
+		}
+
+		info := strings.Split(string(b), "\n")
+
+		var uuid, srcPath string
+		for _, line := range info {
+			key, val, _ := strings.Cut(line, " = ")
+			if key == "uuid" {
+				uuid = val
+			} else if key == "path" {
+				srcPath = val
+			}
+		}
+
+		d.logger.Debug("AILDBG: VZ Ploop: Remove Snapshot", logger.Ctx{"uuid": uuid, "srcPath": srcPath})
+
+		if srcPath == "" || uuid == "" {
+			return fmt.Errorf("Failed to remove. Wrong parameters in the config file: '%s' [ uuid =%s; path = %s",
+				snapPath+"/"+snapshotInfo, uuid, srcPath)
+		}
+
+		disk, res := vzgoploop.Open(srcPath + "/" + defaultDescriptor)
+
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			d.logger.Error("VZ Ploop: Can't open disk", logger.Ctx{"msg": res.Msg})
+		}
+
+		defer disk.Close()
+
+		res = disk.DeleteSnapshot(uuid)
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			return fmt.Errorf("VZ Ploop: Can't delete snapshot: %s", res.Msg)
+		}
+	}
+
+	// Remove the snapshot from the storage device.
+	err := forceRemoveAll(snapPath)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("Failed to remove '%s': %w", snapPath, err)
+	}
+
+	parentName, _, _ := api.GetParentAndSnapshotName(snapVol.name)
+
+	// Remove the parent snapshot directory if this is the last snapshot being removed.
+	err = deleteParentSnapshotDirIfEmpty(d.name, snapVol.volType, parentName)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -519,7 +658,7 @@ func (d *ploop) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) 
 
 // VolumeSnapshots returns a list of snapshots for the volume (in no particular order).
 func (d *ploop) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
-	d.PrintTrace("", 1)
+	d.PrintTrace("List of Snapshots for:"+vol.MountPath()+"/"+defaultDescriptor, 3)
 
 	return nil, nil
 }
