@@ -363,16 +363,13 @@ func (d *ploop) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, 
 // GetVolumeDiskPath returns the location of a disk volume.
 func (d *ploop) GetVolumeDiskPath(vol Volume) (string, error) {
 	d.PrintTrace("", 1)
-
-	return "", nil
+	return genericVFSGetVolumeDiskPath(vol)
 }
 
 // ListVolumes returns a list of volumes in storage pool.
 func (d *ploop) ListVolumes() ([]Volume, error) {
 	d.PrintTrace("VZ Ploop: ListVolumes", 2)
-	d.logger.Debug("VZ Ploop: List Volume")
-
-	return nil, nil
+	return genericVFSListVolumes(d)
 }
 
 // MountVolume simulates mounting a volume.
@@ -483,23 +480,20 @@ func (d *ploop) UnmountVolume(vol Volume, keepBlockDev bool, op *operations.Oper
 // RenameVolume renames a volume and its snapshots.
 func (d *ploop) RenameVolume(vol Volume, newVolName string, op *operations.Operation) error {
 	d.PrintTrace("", 1)
-
-	return nil
+	return genericVFSRenameVolume(d, vol, newVolName, op)
 }
 
 // MigrateVolume sends a volume for migration.
 func (d *ploop) MigrateVolume(vol Volume, conn io.ReadWriteCloser, volSrcArgs *migration.VolumeSourceArgs, op *operations.Operation) error {
 	d.PrintTrace("", 1)
-
-	return nil
+	return genericVFSMigrateVolume(d, d.state, vol, conn, volSrcArgs, op)
 }
 
 // BackupVolume copies a volume (and optionally its snapshots) to a specified target path.
 // This driver does not support optimized backups.
 func (d *ploop) BackupVolume(vol Volume, tarWriter *instancewriter.InstanceTarWriter, optimized bool, snapshots []string, op *operations.Operation) error {
 	d.PrintTrace("", 1)
-
-	return nil
+	return genericVFSBackupVolume(d, vol, tarWriter, snapshots, op)
 }
 
 // CreateVolumeSnapshot creates a snapshot of a volume.
@@ -510,8 +504,8 @@ func (d *ploop) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) e
 	//srcDevPath, err := d.GetVolumeDiskPath(parentVol)
 	srcPath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
 
-	d.logger.Debug("VZ Ploop: Create snap", logger.Ctx{"type1": snapVol.volType, "parent": parentName, "snapName": snapName})
-	d.logger.Debug("VZ Ploop: Create snap", logger.Ctx{"srcPath": srcPath})
+	d.logger.Debug("VZ Ploop: Create snapshot",
+		logger.Ctx{"type": snapVol.volType, "parent": parentName, "snapName": snapName, "srcPath": srcPath})
 
 	// Create snapshot directory.
 	err := snapVol.EnsureMountPath()
@@ -537,7 +531,7 @@ func (d *ploop) CreateVolumeSnapshot(snapVol Volume, op *operations.Operation) e
 
 		bwlimit := d.config["rsync.bwlimit"]
 		srcPath := GetVolumeMountPath(d.name, snapVol.volType, parentName)
-		d.Logger().Debug("Copying fileystem volume", logger.Ctx{"sourcePath": srcPath, "targetPath": snapPath, "bwlimit": bwlimit, "rsyncArgs": rsyncArgs})
+		d.Logger().Debug("VZ Ploop: Copying fileystem volume", logger.Ctx{"sourcePath": srcPath, "targetPath": snapPath, "bwlimit": bwlimit, "rsyncArgs": rsyncArgs})
 
 		// Copy filesystem volume into snapshot directory.
 		_, err = rsync.LocalCopy(srcPath, snapPath, bwlimit, true, rsyncArgs...)
@@ -605,10 +599,10 @@ func (d *ploop) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) e
 			}
 		}
 
-		d.logger.Debug("AILDBG: VZ Ploop: Remove Snapshot", logger.Ctx{"uuid": uuid, "srcPath": srcPath})
+		d.logger.Debug("VZ Ploop: Remove Snapshot", logger.Ctx{"uuid": uuid, "srcPath": srcPath})
 
 		if srcPath == "" || uuid == "" {
-			return fmt.Errorf("Failed to remove. Wrong parameters in the config file: '%s' [ uuid =%s; path = %s",
+			return fmt.Errorf("Failed to remove. Wrong parameters in the config file: '%s' [ uuid =%s; path = %s]",
 				snapPath+"/"+snapshotInfo, uuid, srcPath)
 		}
 
@@ -616,13 +610,12 @@ func (d *ploop) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) e
 
 		if res.Status != vzgoploop.VZP_SUCCESS {
 			d.logger.Error("VZ Ploop: Can't open disk", logger.Ctx{"msg": res.Msg})
-		}
-
-		defer disk.Close()
-
-		res = disk.DeleteSnapshot(uuid)
-		if res.Status != vzgoploop.VZP_SUCCESS {
-			return fmt.Errorf("VZ Ploop: Can't delete snapshot: %s", res.Msg)
+		} else {
+			res = disk.DeleteSnapshot(uuid)
+			if res.Status != vzgoploop.VZP_SUCCESS {
+				return fmt.Errorf("VZ Ploop: Can't delete snapshot: %s", res.Msg)
+			}
+			disk.Close()
 		}
 	}
 
@@ -646,6 +639,11 @@ func (d *ploop) DeleteVolumeSnapshot(snapVol Volume, op *operations.Operation) e
 func (d *ploop) MountVolumeSnapshot(snapVol Volume, op *operations.Operation) error {
 	d.PrintTrace("", 1)
 
+	//TODO: need investigation for purposes of this methods
+	//I do not see reason to implement this for now.
+	//Ploop driver has the function 'ploop_mount_snapshot' but it does not use
+	//So, for this moment we will keep default mock stub for MountVolumeSnapshot/UnmountVolumeSnapshot
+
 	return nil
 }
 
@@ -658,14 +656,76 @@ func (d *ploop) UnmountVolumeSnapshot(snapVol Volume, op *operations.Operation) 
 
 // VolumeSnapshots returns a list of snapshots for the volume (in no particular order).
 func (d *ploop) VolumeSnapshots(vol Volume, op *operations.Operation) ([]string, error) {
-	d.PrintTrace("List of Snapshots for:"+vol.MountPath()+"/"+defaultDescriptor, 3)
-
-	return nil, nil
+	d.PrintTrace("List of Snapshots for: "+vol.MountPath()+"/"+defaultDescriptor, 1)
+	return genericVFSVolumeSnapshots(d, vol, op)
 }
 
 // RestoreVolume restores a volume from a snapshot.
 func (d *ploop) RestoreVolume(vol Volume, snapshotName string, op *operations.Operation) error {
 	d.PrintTrace("", 1)
+
+	snapPath := vol.MountPath()
+
+	snapVol, err := vol.NewSnapshot(snapshotName)
+	if err != nil {
+		return err
+	}
+	srcPath := snapVol.MountPath()
+
+	if vol.volType == VolumeTypeContainer {
+		b, err := os.ReadFile(srcPath + "/" + snapshotInfo)
+		if err != nil {
+			fmt.Print(err)
+		}
+
+		info := strings.Split(string(b), "\n")
+
+		var uuid string
+		for _, line := range info {
+			key, val, _ := strings.Cut(line, " = ")
+			if key == "uuid" {
+				uuid = val
+				break
+			}
+		}
+
+		d.logger.Debug("VZ Ploop: Switch Snapshot", logger.Ctx{"uuid": uuid, "path": snapPath})
+
+		if uuid == "" {
+			return fmt.Errorf("Failed to switch on snapshot. Wrong parameters in the config file: '%s' [ uuid =%s]",
+				snapPath+"/"+snapshotInfo, uuid)
+		}
+
+		disk, res := vzgoploop.Open(snapPath + "/" + defaultDescriptor)
+		defer disk.Close()
+
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			d.logger.Error("VZ Ploop: Can't open disk", logger.Ctx{"msg": res.Msg})
+		}
+
+		res = disk.SwitchSnapshot(uuid)
+		if res.Status != vzgoploop.VZP_SUCCESS {
+			return fmt.Errorf("VZ Ploop: Can't switch to snapshot: %s", res.Msg)
+		}
+
+		var rsyncArgs []string
+
+		rsyncArgs = append(rsyncArgs, "--exclude", snapshotInfo)
+		rsyncArgs = append(rsyncArgs, "--exclude", defaultFileName)
+		rsyncArgs = append(rsyncArgs, "--exclude", defaultDescriptor)
+		rsyncArgs = append(rsyncArgs, "--exclude", ".statfs")
+		rsyncArgs = append(rsyncArgs, "--exclude", defaultFileName+"*")
+		rsyncArgs = append(rsyncArgs, "--exclude", "rootfs")
+
+		bwlimit := d.config["rsync.bwlimit"]
+		d.Logger().Debug("VZ Ploop: Copying fileystem volume", logger.Ctx{"sourcePath": srcPath, "targetPath": snapPath, "bwlimit": bwlimit, "rsyncArgs": rsyncArgs})
+
+		// Copy filesystem volume into snapshot directory.
+		_, err = rsync.LocalCopy(srcPath, snapPath, bwlimit, true, rsyncArgs...)
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -674,5 +734,5 @@ func (d *ploop) RestoreVolume(vol Volume, snapshotName string, op *operations.Op
 func (d *ploop) RenameVolumeSnapshot(snapVol Volume, newSnapshotName string, op *operations.Operation) error {
 	d.PrintTrace("", 1)
 
-	return nil
+	return genericVFSRenameVolumeSnapshot(d, snapVol, newSnapshotName, op)
 }
