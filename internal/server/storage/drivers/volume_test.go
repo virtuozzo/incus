@@ -10,6 +10,7 @@ import (
 // Test Volume_ConfigSizeFromSource.
 func Test_Volume_ConfigSizeFromSource(t *testing.T) {
 	nonBlockBackedDriver := dir{}
+	ploopDriver := ploop{}
 	blockBackedDriver := lvm{}
 
 	tests := []struct {
@@ -101,6 +102,28 @@ func Test_Volume_ConfigSizeFromSource(t *testing.T) {
 			srcVol: Volume{volType: VolumeTypeImage},
 			err:    nil,
 			size:   "50MiB",
+		},
+		{
+			// Check the volume's size is used when empty non-image source volume used.
+			vol:    Volume{driver: &ploopDriver, volType: VolumeTypeContainer, config: map[string]string{"size": "3GiB"}},
+			srcVol: Volume{},
+			err:    nil,
+			size:   "3GiB",
+		},
+		{
+			// Check the volume's pool volume.size isn't used when empty non-image source volume used.
+			vol:    Volume{driver: &ploopDriver, volType: VolumeTypeContainer, poolConfig: map[string]string{"volume.size": "3GiB"}},
+			srcVol: Volume{},
+			err:    nil,
+			size:   "",
+		},
+		{
+			// Check the volume's pool volume.size is used when volume size not specified and empty
+			// image source volume used.
+			vol:    Volume{driver: &ploopDriver, volType: VolumeTypeContainer, poolConfig: map[string]string{"volume.size": "4GiB"}},
+			srcVol: Volume{volType: VolumeTypeImage},
+			err:    nil,
+			size:   "4GiB",
 		},
 	}
 

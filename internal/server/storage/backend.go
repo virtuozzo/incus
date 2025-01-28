@@ -2393,7 +2393,7 @@ func (b *backend) UpdateInstance(inst instance.Instance, newDesc string, newConf
 	changedConfig, userOnly := b.detectChangedConfig(curVol.Config, newConfig)
 	if len(changedConfig) != 0 {
 		// Check that the volume's size property isn't being changed.
-		if changedConfig["size"] != "" {
+		if changedConfig["size"] != "" && b.driver.Info().Name != "ploop" {
 			return fmt.Errorf(`Instance volume "size" property cannot be changed`)
 		}
 

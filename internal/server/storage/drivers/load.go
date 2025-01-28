@@ -14,6 +14,7 @@ var drivers = map[string]func() driver{
 	"lvm":        func() driver { return &lvm{} },
 	"lvmcluster": func() driver { return &lvm{clustered: true} },
 	"zfs":        func() driver { return &zfs{} },
+	"ploop":      func() driver { return &ploop{} },
 }
 
 // Validators contains functions used for validating a drivers's config.
